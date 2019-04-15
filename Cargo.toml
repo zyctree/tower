@@ -11,6 +11,7 @@ members = [
   "tower-load-shed",
   "tower-reconnect",
   "tower-retry",
+  "tower-qos",
   "tower-service",
   "tower-test",
   "tower-timeout",
