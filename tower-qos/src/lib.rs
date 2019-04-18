@@ -3,12 +3,11 @@
 pub mod future;
 
 use crate::future::ResponseFuture;
-use futures::Poll;
-use std::sync::{Arc, atomic::AtomicUsize};
-use tokio_sync::semaphore::{self, Semaphore};
+use futures::{try_ready, Future, Poll};
+use std::sync::{Arc, Weak};
+use tokio_sync::semaphore::{Permit, Semaphore};
 use tower_layer::Layer;
 use tower_service::Service;
-use arc_swap::ArcSwap;
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
@@ -16,7 +15,6 @@ type Error = Box<dyn std::error::Error + Send + Sync>;
 #[derive(Debug, Clone)]
 struct ServiceLimit {
     semaphore: Arc<Semaphore>,
-    permit: semaphore::Permit,
 }
 
 pub enum Classification {
@@ -69,12 +67,13 @@ impl<P, S> QualityOfServiceLayer<P, S> {
 
 impl<P, S, Request> Layer<S, Request> for QualityOfServiceLayer<P, S>
 where
-    S: Service<Request> + Clone,
-    <S as Service<Request>>::Error: Into<Error>,
-    P: Policy<S::Response, S::Error> + Clone,
+    S: Service<Request>,
+    S::Future: Send + 'static,
+    S::Error: Into<Error> + 'static,
+    P: Policy<S::Response, S::Error> + Send + Clone + 'static,
 {
     type Response = S::Response;
-    type Error = S::Error;
+    type Error = Error;
     type LayerError = std::convert::Infallible;
     type Service = QualityOfService<P, S>;
 
@@ -83,44 +82,89 @@ where
     }
 }
 
+#[derive(Debug)]
+struct Limit {
+    semaphore: Arc<Semaphore>,
+    permit: Permit,
+}
+
+#[derive(Debug)]
+/// Lease is a view of the limit, containing a Weak pointer
+/// to the owning semaphore and
+struct Lease {}
+
+impl Limit {
+    fn new(permit: Permit, semaphore: Arc<Semaphore>) -> Self {
+        Self { permit, semaphore }
+    }
+}
+
 /// At a high level, `QualityOfService` is a [control loop](https://en.wikipedia.org/wiki/Control_loop)
 /// that dynamically adjusts the number of concurrent, in-flight requests depending on the health of
 /// a downstream service. This is accomplished using [Policy](trait.Policy.html)
 /// to inspect and classify responses.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct QualityOfService<P, S> {
     policy: P,
     service: S,
-    semaphore: Arc<Semaphore>,
+    limit: Limit,
 }
 
 impl<P, S> QualityOfService<P, S> {
     pub fn new(policy: P, service: S) -> Self {
-        let semaphore = Arc::new(Semaphore::new(1024));
+        let limit = Limit::new(Permit::new(), Arc::new(Semaphore::new(1024)));
         QualityOfService {
             policy,
             service,
-            semaphore,
+            limit,
         }
     }
 }
 
 impl<P, S, Request> Service<Request> for QualityOfService<P, S>
 where
-    P: Policy<S::Response, S::Error> + Clone,
-    S: Service<Request> + Clone,
-    <S as Service<Request>>::Error: Into<Error>,
+    S: Service<Request>,
+    S::Future: Send + 'static,
+    S::Error: Into<Error> + 'static,
+    P: Policy<S::Response, S::Error> + Send + Clone + 'static,
 {
     type Response = S::Response;
-    type Error = S::Error;
-    type Future = ResponseFuture<S::Future, P>;
+    type Error = Error;
+    //type Future = ResponseFuture<S::Future, P>;
+    type Future = Box<dyn Future<Item = Self::Response, Error = Self::Error> + Send + 'static>;
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
-        self.service.poll_ready()
+        try_ready!(self
+            .limit
+            .permit
+            .poll_acquire(&self.limit.semaphore)
+            .map_err(Error::from));
+
+        self.service.poll_ready().map_err(Into::into)
     }
 
     fn call(&mut self, request: Request) -> Self::Future {
+        if self
+            .limit
+            .permit
+            .try_acquire(&self.limit.semaphore)
+            .is_err()
+        {
+            panic!("max requests in-flight; poll_ready must be called first");
+        }
         let fut = self.service.call(request);
-        ResponseFuture::new(fut, self.policy.clone(), self.semaphore.clone())
+
+        // Forget the permit, the permit will be returned when
+        // `future::ResponseFuture` is dropped.
+        self.limit.permit.forget();
+
+        let fut = ResponseFuture::new(
+            fut,
+            self.policy.clone(),
+            Arc::downgrade(&self.limit.semaphore),
+        )
+        .map_err(Into::into);
+
+        Box::new(fut)
     }
 }

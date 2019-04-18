@@ -11,6 +11,7 @@ futures = "0.1"
 tower-service = "0.2.0"
 tower-layer = { version = "0.1", path = "../tower-layer" }
 tokio-timer = "0.2.4"
+arc-swap = "0.3"
 
 [dev-dependencies]
 tower-test = { version = "0.1", path = "../tower-test" }
