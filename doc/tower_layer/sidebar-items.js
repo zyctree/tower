@@ -1,0 +1,1 @@
+initSidebarItems({"trait":[["Layer","Decorates a `Service`, transforming either the request or the response."]]});

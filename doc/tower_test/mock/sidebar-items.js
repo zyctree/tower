@@ -1,0 +1,1 @@
+initSidebarItems({"fn":[["pair","Create a new `Mock` and `Handle` pair."]],"mod":[["error","Error types"],["future","Future types"]],"struct":[["Handle","Handle to the `Mock`."],["Mock","A mock service"],["SendResponse","Send a response in reply to a received request."]]});

@@ -1,0 +1,1 @@
+initSidebarItems({"struct":[["SpawnError","Error produced when spawning the worker fails"]]});

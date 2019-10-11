@@ -1,0 +1,1 @@
+initSidebarItems({"struct":[["BackgroundReady","Drives a service to readiness."]],"trait":[["BackgroundReadyExecutor","This trait allows you to use either Tokio's threaded runtime's executor or the `current_thread` runtime's executor depending on if `T` is `Send` or `!Send`."]]});
